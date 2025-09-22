@@ -198,10 +198,30 @@ async fn prepare_title_index(
         .await?;
     }
 
-    let index = Index::open_in_dir(index_dir)
+    let mut index = Index::open_in_dir(index_dir)
         .with_context(|| format!("opening title index at {}", index_dir.display()))?;
-    let schema = index.schema();
-    let fields = TitleFields::new(&schema)?;
+    let mut schema = index.schema();
+    let fields = match TitleFields::new(&schema) {
+        Ok(fields) => fields,
+        Err(_) => {
+            // Existing index schema is outdated; rebuild.
+            tokio::fs::remove_dir_all(index_dir)
+                .await
+                .with_context(|| format!("clearing legacy title index at {}", index_dir.display()))?;
+            build_title_index(
+                index_dir,
+                basics_path.clone(),
+                ratings_path.clone(),
+                akas_path.clone(),
+                Arc::clone(&principals_map),
+            )
+            .await?;
+            index = Index::open_in_dir(index_dir)
+                .with_context(|| format!("reopening rebuilt title index at {}", index_dir.display()))?;
+            schema = index.schema();
+            TitleFields::new(&schema)?
+        }
+    };
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::OnCommitWithDelay)
@@ -237,10 +257,22 @@ async fn prepare_name_index(index_dir: &Path, names_path: PathBuf) -> Result<Nam
         build_name_index(index_dir, names_path.clone()).await?;
     }
 
-    let index = Index::open_in_dir(index_dir)
+    let mut index = Index::open_in_dir(index_dir)
         .with_context(|| format!("opening name index at {}", index_dir.display()))?;
-    let schema = index.schema();
-    let fields = NameFields::new(&schema)?;
+    let mut schema = index.schema();
+    let fields = match NameFields::new(&schema) {
+        Ok(fields) => fields,
+        Err(_) => {
+            tokio::fs::remove_dir_all(index_dir)
+                .await
+                .with_context(|| format!("clearing legacy name index at {}", index_dir.display()))?;
+            build_name_index(index_dir, names_path.clone()).await?;
+            index = Index::open_in_dir(index_dir)
+                .with_context(|| format!("reopening rebuilt name index at {}", index_dir.display()))?;
+            schema = index.schema();
+            NameFields::new(&schema)?
+        }
+    };
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::OnCommitWithDelay)

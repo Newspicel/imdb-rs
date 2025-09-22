@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::fmt;
 use std::ops::Bound;
 use std::sync::Arc;
 
@@ -29,6 +30,48 @@ impl AppState {
             name_index: Arc::new(indexes.names),
         }
     }
+}
+
+fn deserialize_one_or_many<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or list of strings")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(vec![value.to_string()])
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(vec![value])
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element::<String>()? {
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_any(Visitor)
 }
 
 pub fn router(state: AppState) -> Router {
@@ -66,7 +109,7 @@ struct TitleSearchParams {
     min_votes: Option<i64>,
     #[serde(default)]
     max_votes: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
     genres: Vec<String>,
     #[serde(default)]
     sort: Option<SortMode>,
@@ -122,7 +165,7 @@ struct NameSearchParams {
     birth_year_min: Option<i64>,
     #[serde(default)]
     birth_year_max: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_one_or_many")]
     primary_profession: Vec<String>,
 }
 
@@ -189,10 +232,24 @@ async fn search_titles(
         clauses.push((Occur::Must, parsed_query));
     }
 
-    for title_type in title_types {
-        let term = Term::from_field_text(title_index.fields.title_type, &title_type);
+    if title_types.len() == 1 {
+        let term = Term::from_field_text(title_index.fields.title_type, &title_types[0]);
         let query = TermQuery::new(term, Default::default());
         clauses.push((Occur::Must, Box::new(query)));
+    } else {
+        let shoulds: Vec<(Occur, Box<dyn TantivyQuery>)> = title_types
+            .into_iter()
+            .map(|value| {
+                let term = Term::from_field_text(title_index.fields.title_type, &value);
+                (
+                    Occur::Should,
+                    Box::new(TermQuery::new(term, Default::default())) as Box<dyn TantivyQuery>,
+                )
+            })
+            .collect();
+        if !shoulds.is_empty() {
+            clauses.push((Occur::Must, Box::new(BooleanQuery::from(shoulds))));
+        }
     }
 
     let mut year_min = params.start_year_min.unwrap_or(1980);
@@ -908,10 +965,17 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.status(), StatusCode::OK);
+        let status = response.status();
         let bytes = body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
+        if status != StatusCode::OK {
+            panic!(
+                "unexpected status: {} body: {}",
+                status,
+                String::from_utf8_lossy(&bytes)
+            );
+        }
         let parsed: NameSearchResponse = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed.results.len(), 1);
         assert_eq!(parsed.results[0].nconst, "nm0000206");

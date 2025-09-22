@@ -1,10 +1,6 @@
-mod api;
-mod config;
-mod datasets;
-mod indexer;
-
 use anyhow::Result;
-use config::AppConfig;
+use imdb_rs::{api, config, datasets, indexer};
+use imdb_rs::config::AppConfig;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
