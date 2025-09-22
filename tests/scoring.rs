@@ -75,3 +75,42 @@ fn higher_rating_and_votes_outweigh_recency() {
         "classic should outrank recent due to higher rating/votes"
     );
 }
+
+#[test]
+fn exact_title_match_outranks_partial_even_with_lower_base() {
+    let exact = TitleSearchResult {
+        tconst: "tt_exact".into(),
+        primary_title: "Up".into(),
+        original_title: None,
+        title_type: Some("movie".into()),
+        start_year: Some(2009),
+        end_year: Some(2009),
+        genres: None,
+        average_rating: Some(8.3),
+        num_votes: Some(1_201_529),
+        score: None,
+        sort_value: None,
+    };
+
+    let partial = TitleSearchResult {
+        tconst: "tt_partial".into(),
+        primary_title: "No Way Up".into(),
+        original_title: None,
+        title_type: Some("movie".into()),
+        start_year: Some(2024),
+        end_year: Some(2024),
+        genres: None,
+        average_rating: Some(4.6),
+        num_votes: Some(11_321),
+        score: None,
+        sort_value: None,
+    };
+
+    let exact_score = compute_title_relevance_score(0.75, &exact, Some("up"));
+    let partial_score = compute_title_relevance_score(5.0, &partial, Some("up"));
+
+    assert!(
+        exact_score > partial_score,
+        "exact title match with better rating should outrank partial match"
+    );
+}

@@ -6,7 +6,7 @@ pub fn compute_title_relevance_score(
     result: &TitleSearchResult,
     query_lower: Option<&str>,
 ) -> f32 {
-    let base = base_score.max(0.0001) as f64;
+    let mut base = base_score.max(0.0001) as f64;
 
     let rating = result.average_rating.unwrap_or(5.0);
     let votes = result.num_votes.unwrap_or(0) as f64;
@@ -28,23 +28,26 @@ pub fn compute_title_relevance_score(
 
     let running_bonus = if result.end_year.is_none() { 0.08 } else { 0.0 };
 
-    let title_bonus = query_lower
-        .map(|needle| {
-            let needle = needle.trim();
+    let mut title_bonus = 0.0;
+
+    if let Some(query) = query_lower {
+        let needle = query.trim();
+        if !needle.is_empty() {
             let haystack = result.primary_title.to_lowercase();
             if haystack == needle {
-                5.5
+                base = base.max(4.0);
+                title_bonus = 5.5;
             } else if haystack.starts_with(needle) {
-                1.75
+                title_bonus = 1.75;
             } else if haystack.contains(needle) {
-                0.4
+                title_bonus = 0.4;
             } else if needle.len() <= 3 {
-                -0.6
+                title_bonus = -0.6;
             } else {
-                -0.3
+                title_bonus = -0.3;
             }
-        })
-        .unwrap_or(0.0);
+        }
+    }
 
     let mut combined = 1.0
         + rating_component
