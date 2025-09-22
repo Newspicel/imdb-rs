@@ -1,6 +1,6 @@
 use anyhow::Result;
-use imdb_rs::{api, config, datasets, indexer};
 use imdb_rs::config::AppConfig;
+use imdb_rs::{api, datasets, indexer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 

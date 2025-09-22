@@ -207,7 +207,9 @@ async fn prepare_title_index(
             // Existing index schema is outdated; rebuild.
             tokio::fs::remove_dir_all(index_dir)
                 .await
-                .with_context(|| format!("clearing legacy title index at {}", index_dir.display()))?;
+                .with_context(|| {
+                    format!("clearing legacy title index at {}", index_dir.display())
+                })?;
             build_title_index(
                 index_dir,
                 basics_path.clone(),
@@ -216,8 +218,9 @@ async fn prepare_title_index(
                 Arc::clone(&principals_map),
             )
             .await?;
-            index = Index::open_in_dir(index_dir)
-                .with_context(|| format!("reopening rebuilt title index at {}", index_dir.display()))?;
+            index = Index::open_in_dir(index_dir).with_context(|| {
+                format!("reopening rebuilt title index at {}", index_dir.display())
+            })?;
             schema = index.schema();
             TitleFields::new(&schema)?
         }
@@ -265,10 +268,13 @@ async fn prepare_name_index(index_dir: &Path, names_path: PathBuf) -> Result<Nam
         Err(_) => {
             tokio::fs::remove_dir_all(index_dir)
                 .await
-                .with_context(|| format!("clearing legacy name index at {}", index_dir.display()))?;
+                .with_context(|| {
+                    format!("clearing legacy name index at {}", index_dir.display())
+                })?;
             build_name_index(index_dir, names_path.clone()).await?;
-            index = Index::open_in_dir(index_dir)
-                .with_context(|| format!("reopening rebuilt name index at {}", index_dir.display()))?;
+            index = Index::open_in_dir(index_dir).with_context(|| {
+                format!("reopening rebuilt name index at {}", index_dir.display())
+            })?;
             schema = index.schema();
             NameFields::new(&schema)?
         }
@@ -423,10 +429,7 @@ fn build_title_index_sync(
             .filter(|value| *value != "\\N" && !value.is_empty())
             .map(|value| value.to_string());
         let start_year = parse_i64(record.get(5));
-        let mut end_year = parse_i64(record.get(6));
-        if end_year.is_none() {
-            end_year = start_year;
-        }
+        let end_year = parse_i64(record.get(6));
         let genres: Vec<String> = record
             .get(8)
             .map(|value| {
