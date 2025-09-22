@@ -48,6 +48,7 @@ Searches titles (movies, TV shows, etc.). Supported query parameters:
 - `min_votes`, `max_votes` – inclusive vote-count range.
 - `genres` – repeatable parameter to require specific genres (e.g. `genres=Action&genres=Sci-Fi`).
 - `sort` – one of `relevance` (default), `rating_desc`, `rating_asc`, `votes_desc`, `votes_asc`.
+- Defaults (can be overridden): `title_type=movie,tvSeries` and `start_year_min=1980`.
 
 Response example:
 ```json

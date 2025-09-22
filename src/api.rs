@@ -150,20 +150,24 @@ async fn search_titles(
     let sort_mode = params.sort.unwrap_or_default();
 
     let query_text = params.query.as_deref().unwrap_or("").trim().to_string();
+    let default_title_types = vec!["movie".to_string(), "tvSeries".to_string()];
+    let title_types: Vec<String> = match params.title_type.as_ref() {
+        Some(value) if !value.is_empty() => vec![value.clone()],
+        _ => default_title_types,
+    };
 
     if query_text.is_empty()
         && params.title_type.is_none()
         && params.start_year_min.is_none()
-        && params.start_year_max.is_none()
         && params.min_rating.is_none()
         && params.max_rating.is_none()
         && params.min_votes.is_none()
         && params.max_votes.is_none()
         && params.genres.is_empty()
     {
-        return Err(ApiError::bad_request(
-            "at least one search term or filter must be provided",
-        ));
+        tracing::debug!(
+            "applying default title filters: titleType in [movie,tvSeries], start_year>=1980"
+        );
     }
 
     let title_index = &state.title_index;
@@ -179,21 +183,27 @@ async fn search_titles(
         clauses.push((Occur::Must, parsed_query));
     }
 
-    if let Some(title_type) = params.title_type.as_ref().filter(|value| !value.is_empty()) {
-        let term = Term::from_field_text(title_index.fields.title_type, title_type);
+    for title_type in title_types {
+        let term = Term::from_field_text(title_index.fields.title_type, &title_type);
         let query = TermQuery::new(term, Default::default());
         clauses.push((Occur::Must, Box::new(query)));
     }
 
-    if params.start_year_min.is_some() || params.start_year_max.is_some() {
-        let lower = params
-            .start_year_min
-            .map(|value| {
-                Bound::Included(Term::from_field_i64(title_index.fields.start_year, value))
-            })
-            .unwrap_or(Bound::Unbounded);
-        let upper = params
-            .start_year_max
+    let mut year_min = params.start_year_min.unwrap_or(1980);
+    let mut year_max = params.start_year_max;
+    if let Some(explicit_min) = params.start_year_min {
+        year_min = explicit_min;
+    }
+    if let Some(explicit_max) = params.start_year_max {
+        year_max = Some(explicit_max);
+    }
+
+    if year_min != 0 || year_max.is_some() {
+        let lower = Bound::Included(Term::from_field_i64(
+            title_index.fields.start_year,
+            year_min,
+        ));
+        let upper = year_max
             .map(|value| {
                 Bound::Included(Term::from_field_i64(title_index.fields.start_year, value))
             })
