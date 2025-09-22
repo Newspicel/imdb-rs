@@ -23,29 +23,39 @@ pub fn compute_title_relevance_score(
     let year_component = if recency_year == 0 {
         0.0
     } else {
-        ((recency_year as f64 - 2010.0) / 80.0).clamp(-0.1, 0.2)
+        ((recency_year as f64 - 2010.0) / 80.0).clamp(-0.05, 0.18)
     };
 
-    let running_bonus = if result.end_year.is_none() { 0.04 } else { 0.0 };
+    let running_bonus = if result.end_year.is_none() { 0.08 } else { 0.0 };
 
-    let primary_bonus = query_lower
-        .and_then(|needle| {
+    let title_bonus = query_lower
+        .map(|needle| {
+            let needle = needle.trim();
             let haystack = result.primary_title.to_lowercase();
             if haystack == needle {
-                Some(0.55)
+                5.5
+            } else if haystack.starts_with(needle) {
+                1.75
             } else if haystack.contains(needle) {
-                Some(0.35)
+                0.4
+            } else if needle.len() <= 3 {
+                -0.6
             } else {
-                None
+                -0.3
             }
         })
         .unwrap_or(0.0);
 
-    let combined = 1.0
+    let mut combined = 1.0
         + rating_component
         + popularity_component
         + year_component
         + running_bonus
-        + primary_bonus;
+        + title_bonus;
+
+    if votes < 10.0 || result.average_rating.is_none() {
+        combined *= 0.25;
+    }
+
     (base * combined) as f32
 }
