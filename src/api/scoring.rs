@@ -6,7 +6,7 @@ pub fn compute_title_relevance_score(
     result: &TitleSearchResult,
     query_lower: Option<&str>,
 ) -> f32 {
-    let mut base = base_score.max(0.0001) as f64;
+    let mut base = (base_score.max(0.0001) as f64).sqrt();
 
     let rating = result.average_rating.unwrap_or(5.0);
     let votes = result.num_votes.unwrap_or(0) as f64;
