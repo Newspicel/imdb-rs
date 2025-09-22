@@ -55,6 +55,10 @@ struct TitleSearchParams {
     #[serde(default)]
     start_year_max: Option<i64>,
     #[serde(default)]
+    end_year_min: Option<i64>,
+    #[serde(default)]
+    end_year_max: Option<i64>,
+    #[serde(default)]
     min_rating: Option<f64>,
     #[serde(default)]
     max_rating: Option<f64>,
@@ -94,6 +98,8 @@ struct TitleSearchResult {
     title_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     start_year: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_year: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     genres: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -166,7 +172,7 @@ async fn search_titles(
         && params.genres.is_empty()
     {
         tracing::debug!(
-            "applying default title filters: titleType in [movie,tvSeries], start_year>=1980"
+            "applying default title filters: titleType in [movie,tvSeries], start_year>=1980, end_year>=1980"
         );
     }
 
@@ -207,6 +213,27 @@ async fn search_titles(
             .map(|value| {
                 Bound::Included(Term::from_field_i64(title_index.fields.start_year, value))
             })
+            .unwrap_or(Bound::Unbounded);
+        let range = RangeQuery::new(lower, upper);
+        clauses.push((Occur::Must, Box::new(range)));
+    }
+
+    let mut end_year_min = params.end_year_min.unwrap_or(1980);
+    let mut end_year_max = params.end_year_max;
+    if let Some(explicit_min) = params.end_year_min {
+        end_year_min = explicit_min;
+    }
+    if let Some(explicit_max) = params.end_year_max {
+        end_year_max = Some(explicit_max);
+    }
+
+    if end_year_min != 0 || end_year_max.is_some() {
+        let lower = Bound::Included(Term::from_field_i64(
+            title_index.fields.end_year,
+            end_year_min,
+        ));
+        let upper = end_year_max
+            .map(|value| Bound::Included(Term::from_field_i64(title_index.fields.end_year, value)))
             .unwrap_or(Bound::Unbounded);
         let range = RangeQuery::new(lower, upper);
         clauses.push((Occur::Must, Box::new(range)));
@@ -516,6 +543,7 @@ fn document_to_title_result(
         original_title: get_first_text(doc, fields.original_title),
         title_type: get_first_text(doc, fields.title_type),
         start_year: get_first_i64(doc, fields.start_year),
+        end_year: get_first_i64(doc, fields.end_year),
         genres: get_all_text(doc, fields.genres),
         average_rating: get_first_f64(doc, fields.average_rating),
         num_votes: get_first_i64(doc, fields.num_votes),
@@ -579,10 +607,8 @@ fn compute_title_relevance_score(
 
     let rating = result.average_rating.unwrap_or(5.0);
     let votes = result.num_votes.unwrap_or(0) as f64;
-    let year_component = result
-        .start_year
-        .map(|year| ((year as f64 - 1980.0) / 50.0).clamp(0.0, 1.5))
-        .unwrap_or(0.0);
+    let recency_year = result.end_year.or(result.start_year).unwrap_or_default();
+    let year_component = ((recency_year as f64 - 1980.0) / 50.0).clamp(0.0, 1.5);
 
     let vote_weight = (1.0 + votes).ln();
     let rating_component = (rating / 10.0) * (1.0 + vote_weight / 5.0);

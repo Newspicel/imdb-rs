@@ -44,11 +44,12 @@ Searches titles (movies, TV shows, etc.). Supported query parameters:
 - `limit` *(optional)* – max results (1–50, default 10).
 - `title_type` – filter by exact title type (e.g. `movie`, `tvSeries`).
 - `start_year_min`, `start_year_max` – inclusive production year range filters.
+- `end_year_min`, `end_year_max` – inclusive range for series end year (defaults mirror start year behaviour).
 - `min_rating`, `max_rating` – inclusive average rating range (floating-point).
 - `min_votes`, `max_votes` – inclusive vote-count range.
 - `genres` – repeatable parameter to require specific genres (e.g. `genres=Action&genres=Sci-Fi`).
 - `sort` – one of `relevance` (default), `rating_desc`, `rating_asc`, `votes_desc`, `votes_asc`.
-- Defaults (can be overridden): `title_type=movie,tvSeries` and `start_year_min=1980`.
+- Defaults (can be overridden): `title_type=movie,tvSeries`, `start_year_min=1980`, `end_year_min=1980`.
 
 Response example:
 ```json
@@ -60,6 +61,7 @@ Response example:
       "original_title": "The Matrix",
       "title_type": "movie",
       "start_year": 1999,
+      "end_year": 1999,
       "genres": ["Action", "Sci-Fi"],
       "average_rating": 8.7,
       "num_votes": 1900000,

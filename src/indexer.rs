@@ -24,6 +24,7 @@ pub struct TitleFields {
     pub original_title: Field,
     pub title_type: Field,
     pub start_year: Field,
+    pub end_year: Field,
     pub genres: Field,
     pub average_rating: Field,
     pub num_votes: Field,
@@ -48,6 +49,9 @@ impl TitleFields {
             start_year: schema
                 .get_field("startYear")
                 .map_err(|_| anyhow!("missing field startYear"))?,
+            end_year: schema
+                .get_field("endYear")
+                .map_err(|_| anyhow!("missing field endYear"))?,
             genres: schema
                 .get_field("genres")
                 .map_err(|_| anyhow!("missing field genres"))?,
@@ -277,6 +281,7 @@ fn build_title_schema() -> Schema {
         .set_fast();
 
     schema_builder.add_i64_field("startYear", numeric_options.clone());
+    schema_builder.add_i64_field("endYear", numeric_options.clone());
     schema_builder.add_f64_field("averageRating", numeric_options.clone());
     schema_builder.add_i64_field("numVotes", numeric_options);
 
@@ -386,6 +391,10 @@ fn build_title_index_sync(
             .filter(|value| *value != "\\N" && !value.is_empty())
             .map(|value| value.to_string());
         let start_year = parse_i64(record.get(5));
+        let mut end_year = parse_i64(record.get(6));
+        if end_year.is_none() {
+            end_year = start_year;
+        }
         let genres: Vec<String> = record
             .get(8)
             .map(|value| {
@@ -431,6 +440,9 @@ fn build_title_index_sync(
         }
         if let Some(year) = start_year {
             doc.add_i64(fields.start_year, year);
+        }
+        if let Some(year) = end_year {
+            doc.add_i64(fields.end_year, year);
         }
         if let Some((rating, votes)) = ratings_map.get(&tconst) {
             doc.add_f64(fields.average_rating, *rating);
