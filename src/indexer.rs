@@ -216,6 +216,9 @@ async fn prepare_title_index(
     query_parser.set_field_boost(fields.original_title, 1.2);
     query_parser.set_field_boost(fields.search_titles, 1.0);
     query_parser.set_field_boost(fields.genres, 0.3);
+    query_parser.set_field_fuzzy(fields.primary_title, false, 1, true);
+    query_parser.set_field_fuzzy(fields.original_title, false, 1, true);
+    query_parser.set_field_fuzzy(fields.search_titles, false, 1, true);
 
     Ok(TitleIndex {
         schema,
@@ -239,10 +242,13 @@ async fn prepare_name_index(index_dir: &Path, names_path: PathBuf) -> Result<Nam
         .reload_policy(ReloadPolicy::OnCommitWithDelay)
         .try_into()
         .context("constructing name index reader")?;
-    let query_parser = QueryParser::for_index(
+    let mut query_parser = QueryParser::for_index(
         &index,
         vec![fields.primary_name_search, fields.primary_profession],
     );
+    query_parser.set_field_boost(fields.primary_name_search, 1.5);
+    query_parser.set_field_fuzzy(fields.primary_name_search, false, 1, true);
+    query_parser.set_field_fuzzy(fields.primary_profession, false, 1, true);
 
     Ok(NameIndex {
         fields,

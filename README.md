@@ -7,8 +7,8 @@ Rust service that downloads selected IMDb non-commercial datasets, builds a sear
 - Stores compressed and decompressed TSV files in a configurable data directory.
 - Builds Tantivy indices for titles (primary, original, and international AKA titles) and names, enabling multilingual full-text search.
 - Async downloader with resumable streaming and background decompression.
-- Filterable JSON API for titles (type, year range, genres, rating, vote counts) with optional ranking by rating or votes; title search also matches crew and cast names from `title.principals.tsv`.
-- Dedicated name search API backed by the IMDb `name.basics.tsv` dataset with range/attribute filters.
+- Filterable JSON API for titles (type, year range, genres, rating, vote counts) with optional ranking by rating or votes; title search also matches crew/cast names and tolerates minor typos.
+- Dedicated name search API backed by the IMDb `name.basics.tsv` dataset with range/attribute filters and typo tolerance.
 
 ## Prerequisites
 - Rust 1.75+ (project uses the Rust 2024 edition and async/await).
