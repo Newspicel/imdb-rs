@@ -31,8 +31,8 @@ async fn main() -> Result<()> {
     let datasets = datasets::prepare_datasets(&config).await?;
     info!(file_count = datasets.len(), "datasets ready");
 
-    let prepared_index = indexer::prepare_index(&config, &datasets).await?;
-    let app_state = api::AppState::new(prepared_index);
+    let prepared_indexes = indexer::prepare_indexes(&config, &datasets).await?;
+    let app_state = api::AppState::new(prepared_indexes);
     let app = api::router(app_state);
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
