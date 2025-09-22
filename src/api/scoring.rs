@@ -15,24 +15,24 @@ pub fn compute_title_relevance_score(
     const VOTE_THRESHOLD: f64 = 1_000.0;
     let vote_mix = votes / (votes + VOTE_THRESHOLD);
     let weighted_rating = vote_mix * rating + (1.0 - vote_mix) * GLOBAL_AVG;
-    let rating_component = (weighted_rating / 10.0) * 2.0;
+    let rating_component = (weighted_rating / 10.0) * 3.5;
 
-    let popularity_component = (votes + 1.0).ln() / 8.0;
+    let popularity_component = (votes + 1.0).ln() / 9.0;
 
     let recency_year = result.end_year.or(result.start_year).unwrap_or_default();
     let year_component = if recency_year == 0 {
         0.0
     } else {
-        ((recency_year as f64 - 2000.0) / 30.0).clamp(-0.2, 0.6)
+        ((recency_year as f64 - 2010.0) / 80.0).clamp(-0.1, 0.2)
     };
 
-    let running_bonus = if result.end_year.is_none() { 0.25 } else { 0.0 };
+    let running_bonus = if result.end_year.is_none() { 0.04 } else { 0.0 };
 
     let primary_bonus = query_lower
         .and_then(|needle| {
             let haystack = result.primary_title.to_lowercase();
             if haystack == needle {
-                Some(0.5)
+                Some(0.55)
             } else if haystack.contains(needle) {
                 Some(0.35)
             } else {
