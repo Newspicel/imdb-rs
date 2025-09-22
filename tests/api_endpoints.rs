@@ -3,7 +3,9 @@ use axum::http::{Request, StatusCode};
 use serde_json::from_slice;
 use tantivy::Index;
 use tantivy::query::QueryParser;
-use tantivy::schema::{NumericOptions, STORED, STRING, Schema, TEXT};
+use tantivy::schema::{
+    IndexRecordOption, NumericOptions, STORED, STRING, Schema, TEXT, TextFieldIndexing, TextOptions,
+};
 use tower::ServiceExt;
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -17,6 +19,15 @@ fn build_title_schema() -> (Schema, imdb_rs::indexer::TitleFields, Index) {
         builder.add_text_field("originalTitle", TEXT | STORED);
         builder.add_text_field("genres", TEXT | STORED);
         builder.add_text_field("searchTitles", TEXT);
+        let exact_indexing = TextFieldIndexing::default()
+            .set_tokenizer("raw")
+            .set_index_option(IndexRecordOption::Basic);
+        builder.add_text_field(
+            "primary_title_exact",
+            TextOptions::default()
+                .set_indexing_options(exact_indexing)
+                .set_stored(),
+        );
         let numeric = NumericOptions::default()
             .set_indexed()
             .set_stored()
@@ -33,6 +44,7 @@ fn build_title_schema() -> (Schema, imdb_rs::indexer::TitleFields, Index) {
     let fields = imdb_rs::indexer::TitleFields {
         tconst: schema_from_index.get_field("tconst").unwrap(),
         primary_title: schema_from_index.get_field("primaryTitle").unwrap(),
+        primary_title_exact: schema_from_index.get_field("primary_title_exact").ok(),
         original_title: schema_from_index.get_field("originalTitle").unwrap(),
         title_type: schema_from_index.get_field("titleType").unwrap(),
         start_year: schema_from_index.get_field("startYear").unwrap(),
@@ -89,6 +101,9 @@ fn build_test_indexes() -> imdb_rs::indexer::PreparedIndexes {
     doc.add_text(fields.primary_title, "The Matrix");
     doc.add_text(fields.original_title, "The Matrix");
     doc.add_text(fields.search_titles, "The Matrix");
+    if let Some(exact) = fields.primary_title_exact {
+        doc.add_text(exact, "the matrix");
+    }
     doc.add_text(fields.genres, "Action");
     doc.add_text(fields.genres, "Sci-Fi");
     doc.add_i64(fields.start_year, 1999);

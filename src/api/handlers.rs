@@ -4,7 +4,10 @@ use std::ops::Bound;
 use axum::Json;
 use axum::extract::{Path, Query as AxumQuery, State};
 use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query as TantivyQuery, RangeQuery, TermQuery};
+use tantivy::query::{
+    AllQuery, BooleanQuery, BoostQuery, FuzzyTermQuery, Occur, Query as TantivyQuery, RangeQuery,
+    TermQuery,
+};
 use tantivy::schema::{Field, TantivyDocument};
 use tantivy::{DocAddress, Order, Score, Term};
 use tracing::{debug, instrument};
@@ -21,6 +24,17 @@ pub async fn healthz() -> &'static str {
     "ok"
 }
 
+fn candidate_limit_for(query: &str, limit: usize) -> usize {
+    let qlen = query.chars().filter(|c| c.is_alphanumeric()).count();
+    match qlen {
+        0 => limit,
+        1..=2 => (limit * 300).clamp(1000, 5000),
+        3 => (limit * 200).clamp(1000, 4000),
+        4..=6 => (limit * 120).clamp(800, 3000),
+        _ => (limit * 60).clamp(500, 2000),
+    }
+}
+
 #[instrument(skip_all)]
 pub async fn search_titles(
     State(state): State<AppState>,
@@ -34,6 +48,12 @@ pub async fn search_titles(
     let title_types: Vec<String> = match params.title_type.as_ref() {
         Some(value) if !value.is_empty() => vec![value.clone()],
         _ => default_title_types,
+    };
+
+    let query_lower = if query_text.is_empty() {
+        None
+    } else {
+        Some(query_text.to_lowercase())
     };
 
     if query_text.is_empty()
@@ -59,6 +79,32 @@ pub async fn search_titles(
             .parse_query(&query_text)
             .map_err(|err| ApiError::bad_request(format!("invalid query: {}", err)))?;
         clauses.push((Occur::Must, parsed_query));
+
+        if let Some(ref qlc) = query_lower {
+            let term = Term::from_field_text(title_index.fields.primary_title, qlc);
+            let boosted = BoostQuery::new(Box::new(TermQuery::new(term, Default::default())), 8.0);
+            clauses.push((Occur::Should, Box::new(boosted)));
+
+            let term_o = Term::from_field_text(title_index.fields.original_title, qlc);
+            let boosted_o =
+                BoostQuery::new(Box::new(TermQuery::new(term_o, Default::default())), 4.0);
+            clauses.push((Occur::Should, Box::new(boosted_o)));
+
+            if let Some(primary_title_exact) = title_index.fields.primary_title_exact {
+                let term_exact = Term::from_field_text(primary_title_exact, qlc);
+                let boosted_exact = BoostQuery::new(
+                    Box::new(TermQuery::new(term_exact.clone(), Default::default())),
+                    50.0,
+                );
+                clauses.push((Occur::Should, Box::new(boosted_exact)));
+
+                if qlc.len() >= 3 {
+                    let fuzzy = FuzzyTermQuery::new(term_exact, 1, true);
+                    let boosted_fuzzy = BoostQuery::new(Box::new(fuzzy), 30.0);
+                    clauses.push((Occur::Should, Box::new(boosted_fuzzy)));
+                }
+            }
+        }
     }
 
     if title_types.len() == 1 {
@@ -173,18 +219,18 @@ pub async fn search_titles(
         I64(Vec<(i64, DocAddress)>),
     }
 
-    let query_lower = if query_text.is_empty() {
-        None
-    } else {
-        Some(query_text.to_lowercase())
-    };
-
     let hits = match sort_mode {
-        SortMode::Relevance => CollectedDocs::Score(
-            searcher
-                .search(&combined_query, &TopDocs::with_limit(limit))
-                .map_err(|err| ApiError::internal(err.into()))?,
-        ),
+        SortMode::Relevance => {
+            let candidate_basis = query_lower
+                .as_deref()
+                .unwrap_or_else(|| query_text.as_str());
+            let candidate_limit = candidate_limit_for(candidate_basis, limit);
+            CollectedDocs::Score(
+                searcher
+                    .search(&combined_query, &TopDocs::with_limit(candidate_limit))
+                    .map_err(|err| ApiError::internal(err.into()))?,
+            )
+        }
         SortMode::RatingDesc => {
             let collector = TopDocs::with_limit(limit).order_by_fast_field::<f64>(
                 field_name(title_index.fields.average_rating),
@@ -266,9 +312,12 @@ pub async fn search_titles(
 
     if matches!(sort_mode, SortMode::Relevance) {
         results.sort_by(|a, b| {
-            let left = a.score.unwrap_or_default();
-            let right = b.score.unwrap_or_default();
-            right.partial_cmp(&left).unwrap_or(Ordering::Equal)
+            let left = a.score.unwrap_or(f32::NEG_INFINITY);
+            let right = b.score.unwrap_or(f32::NEG_INFINITY);
+            match right.partial_cmp(&left).unwrap_or(Ordering::Equal) {
+                Ordering::Equal => a.tconst.cmp(&b.tconst),
+                other => other,
+            }
         });
         results.truncate(limit);
     }

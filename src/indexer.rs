@@ -5,7 +5,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use csv::ReaderBuilder;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Field, NumericOptions, STORED, STRING, Schema, TEXT, TantivyDocument};
+use tantivy::schema::{
+    Field, IndexRecordOption, NumericOptions, STORED, STRING, Schema, TEXT, TantivyDocument,
+    TextFieldIndexing, TextOptions,
+};
 use tantivy::{Index, IndexReader, ReloadPolicy};
 use tokio::fs;
 use tokio::task;
@@ -21,6 +24,7 @@ const NAME_INDEX_SUBDIR: &str = "names";
 pub struct TitleFields {
     pub tconst: Field,
     pub primary_title: Field,
+    pub primary_title_exact: Option<Field>,
     pub original_title: Field,
     pub title_type: Field,
     pub start_year: Field,
@@ -40,6 +44,7 @@ impl TitleFields {
             primary_title: schema
                 .get_field("primaryTitle")
                 .map_err(|_| anyhow!("missing field primaryTitle"))?,
+            primary_title_exact: schema.get_field("primary_title_exact").ok(),
             original_title: schema
                 .get_field("originalTitle")
                 .map_err(|_| anyhow!("missing field originalTitle"))?,
@@ -313,6 +318,16 @@ fn build_title_schema() -> Schema {
     schema_builder.add_text_field("genres", TEXT | STORED);
     schema_builder.add_text_field("searchTitles", TEXT);
 
+    let exact_indexing = TextFieldIndexing::default()
+        .set_tokenizer("raw")
+        .set_index_option(IndexRecordOption::Basic);
+    schema_builder.add_text_field(
+        "primary_title_exact",
+        TextOptions::default()
+            .set_indexing_options(exact_indexing)
+            .set_stored(),
+    );
+
     let numeric_options = NumericOptions::default()
         .set_indexed()
         .set_stored()
@@ -423,6 +438,7 @@ fn build_title_index_sync(
             continue;
         };
         let primary_title = primary_title_raw.to_string();
+        let primary_title_lower = primary_title.to_lowercase();
 
         let original_title = record
             .get(3)
@@ -446,9 +462,15 @@ fn build_title_index_sync(
         doc.add_text(fields.title_type, &title_type);
         doc.add_text(fields.primary_title, &primary_title);
         doc.add_text(fields.search_titles, &primary_title);
+        if let Some(primary_title_exact) = fields.primary_title_exact {
+            doc.add_text(primary_title_exact, &primary_title_lower);
+        }
         if let Some(original_title) = original_title.as_ref() {
             doc.add_text(fields.original_title, original_title);
             doc.add_text(fields.search_titles, original_title);
+            if let Some(primary_title_exact) = fields.primary_title_exact {
+                doc.add_text(primary_title_exact, &original_title.to_lowercase());
+            }
         }
 
         if let Some(aka_titles) = aka_map.get(&tconst) {
@@ -460,6 +482,9 @@ fn build_title_index_sync(
             for aka in aka_titles {
                 if seen.insert(aka.clone()) {
                     doc.add_text(fields.search_titles, aka);
+                    if let Some(primary_title_exact) = fields.primary_title_exact {
+                        doc.add_text(primary_title_exact, &aka.to_lowercase());
+                    }
                 }
             }
         }
