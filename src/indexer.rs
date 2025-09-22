@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use csv::ReaderBuilder;
@@ -145,6 +145,9 @@ pub async fn prepare_indexes(
     let names = dataset_lookup
         .get("name.basics.tsv.gz")
         .ok_or_else(|| anyhow!("missing name.basics dataset"))?;
+    let principals = dataset_lookup
+        .get("title.principals.tsv.gz")
+        .ok_or_else(|| anyhow!("missing title.principals dataset"))?;
 
     fs::create_dir_all(&config.index_dir)
         .await
@@ -153,11 +156,15 @@ pub async fn prepare_indexes(
     let title_index_dir = config.index_dir.join(TITLE_INDEX_SUBDIR);
     let name_index_dir = config.index_dir.join(NAME_INDEX_SUBDIR);
 
+    let name_lookup = Arc::new(load_name_map(&names.tsv_path)?);
+    let principals_map = Arc::new(load_principals_map(&principals.tsv_path, &name_lookup)?);
+
     let title_index = prepare_title_index(
         &title_index_dir,
         basics.tsv_path.clone(),
         ratings.tsv_path.clone(),
         akas.tsv_path.clone(),
+        Arc::clone(&principals_map),
     )
     .await?;
 
@@ -174,6 +181,7 @@ async fn prepare_title_index(
     basics_path: PathBuf,
     ratings_path: PathBuf,
     akas_path: PathBuf,
+    principals_map: Arc<HashMap<String, Vec<String>>>,
 ) -> Result<TitleIndex> {
     if !index_exists(index_dir) {
         build_title_index(
@@ -181,6 +189,7 @@ async fn prepare_title_index(
             basics_path.clone(),
             ratings_path.clone(),
             akas_path.clone(),
+            Arc::clone(&principals_map),
         )
         .await?;
     }
@@ -289,10 +298,17 @@ async fn build_title_index(
     basics_path: PathBuf,
     ratings_path: PathBuf,
     akas_path: PathBuf,
+    principals_map: Arc<HashMap<String, Vec<String>>>,
 ) -> Result<()> {
     let index_dir = index_dir.to_path_buf();
     task::spawn_blocking(move || {
-        build_title_index_sync(&index_dir, &basics_path, &ratings_path, &akas_path)
+        build_title_index_sync(
+            &index_dir,
+            &basics_path,
+            &ratings_path,
+            &akas_path,
+            &principals_map,
+        )
     })
     .await??;
     Ok(())
@@ -303,6 +319,7 @@ fn build_title_index_sync(
     basics_path: &Path,
     ratings_path: &Path,
     akas_path: &Path,
+    principals_map: &HashMap<String, Vec<String>>,
 ) -> Result<()> {
     if index_dir.exists() {
         std::fs::remove_dir_all(index_dir)
@@ -390,6 +407,12 @@ fn build_title_index_sync(
                 if seen.insert(aka.clone()) {
                     doc.add_text(fields.search_titles, aka);
                 }
+            }
+        }
+
+        if let Some(names) = principals_map.get(&tconst) {
+            for name in names {
+                doc.add_text(fields.search_titles, name);
             }
         }
 
@@ -560,6 +583,72 @@ fn load_aka_map(path: &Path) -> Result<HashMap<String, Vec<String>>> {
     }
 
     Ok(map)
+}
+
+fn load_name_map(path: &Path) -> Result<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    let mut reader = ReaderBuilder::new()
+        .delimiter(b'\t')
+        .has_headers(true)
+        .flexible(true)
+        .from_path(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+
+    for result in reader.records() {
+        let record = result.with_context(|| format!("reading {}", path.display()))?;
+        let Some(nconst) = record.get(0) else {
+            continue;
+        };
+        let Some(primary_name) = record.get(1) else {
+            continue;
+        };
+        if nconst.is_empty() || nconst == "\\N" || primary_name.is_empty() {
+            continue;
+        }
+        map.insert(nconst.to_string(), primary_name.to_string());
+    }
+
+    Ok(map)
+}
+
+fn load_principals_map(
+    path: &Path,
+    name_lookup: &HashMap<String, String>,
+) -> Result<HashMap<String, Vec<String>>> {
+    let mut map: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut reader = ReaderBuilder::new()
+        .delimiter(b'\t')
+        .has_headers(true)
+        .flexible(true)
+        .from_path(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+
+    for result in reader.records() {
+        let record = result.with_context(|| format!("reading {}", path.display()))?;
+        let Some(tconst) = record.get(0) else {
+            continue;
+        };
+        let Some(nconst) = record.get(2) else {
+            continue;
+        };
+
+        if tconst.is_empty() || tconst == "\\N" || nconst.is_empty() || nconst == "\\N" {
+            continue;
+        }
+
+        let Some(name) = name_lookup.get(nconst) else {
+            continue;
+        };
+
+        map.entry(tconst.to_string())
+            .or_default()
+            .insert(name.clone());
+    }
+
+    Ok(map
+        .into_iter()
+        .map(|(tconst, names)| (tconst, names.into_iter().collect()))
+        .collect())
 }
 
 fn parse_i64(value: Option<&str>) -> Option<i64> {
