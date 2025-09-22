@@ -37,8 +37,8 @@ pub fn router(state: AppState) -> Router {
         .route("/search", get(search_titles))
         .route("/titles/search", get(search_titles))
         .route("/names/search", get(search_names))
-        .route("/titles/:tconst", get(get_title_by_id))
-        .route("/names/:nconst", get(get_name_by_id))
+        .route("/titles/{tconst}", get(get_title_by_id))
+        .route("/names/{nconst}", get(get_name_by_id))
         .with_state(state)
 }
 
