@@ -83,12 +83,12 @@ enum SortMode {
     VotesAsc,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TitleSearchResponse {
     results: Vec<TitleSearchResult>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TitleSearchResult {
     tconst: String,
     primary_title: String,
@@ -126,12 +126,12 @@ struct NameSearchParams {
     primary_profession: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct NameSearchResponse {
     results: Vec<NameSearchResult>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct NameSearchResult {
     nconst: String,
     primary_name: String,
@@ -679,6 +679,279 @@ struct ApiError {
     status: StatusCode,
     message: String,
     detail: Option<anyhow::Error>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::{self, Body};
+    use axum::http::{Request, StatusCode};
+    use tantivy::Index;
+    use tantivy::query::QueryParser;
+    use tantivy::schema::{NumericOptions, STORED, STRING, Schema, TEXT};
+    use tower::util::ServiceExt as _;
+
+    fn build_test_title_schema() -> (Schema, TitleFields, Index) {
+        let schema = {
+            let mut builder = Schema::builder();
+            builder.add_text_field("tconst", STRING | STORED);
+            builder.add_text_field("titleType", STRING | STORED);
+            builder.add_text_field("primaryTitle", TEXT | STORED);
+            builder.add_text_field("originalTitle", TEXT | STORED);
+            builder.add_text_field("genres", TEXT | STORED);
+            builder.add_text_field("searchTitles", TEXT);
+            let numeric = NumericOptions::default()
+                .set_indexed()
+                .set_stored()
+                .set_fast();
+            builder.add_i64_field("startYear", numeric.clone());
+            builder.add_i64_field("endYear", numeric.clone());
+            builder.add_f64_field("averageRating", numeric.clone());
+            builder.add_i64_field("numVotes", numeric);
+            builder.build()
+        };
+
+        let index = Index::create_in_ram(schema.clone());
+        let schema_from_index = index.schema();
+        let fields = TitleFields {
+            tconst: schema_from_index.get_field("tconst").unwrap(),
+            primary_title: schema_from_index.get_field("primaryTitle").unwrap(),
+            original_title: schema_from_index.get_field("originalTitle").unwrap(),
+            title_type: schema_from_index.get_field("titleType").unwrap(),
+            start_year: schema_from_index.get_field("startYear").unwrap(),
+            end_year: schema_from_index.get_field("endYear").unwrap(),
+            genres: schema_from_index.get_field("genres").unwrap(),
+            average_rating: schema_from_index.get_field("averageRating").unwrap(),
+            num_votes: schema_from_index.get_field("numVotes").unwrap(),
+            search_titles: schema_from_index.get_field("searchTitles").unwrap(),
+        };
+
+        (schema, fields, index)
+    }
+
+    fn build_test_name_schema() -> (Schema, NameFields, Index) {
+        let schema = {
+            let mut builder = Schema::builder();
+            builder.add_text_field("nconst", STRING | STORED);
+            builder.add_text_field("primaryName", TEXT | STORED);
+            builder.add_text_field("primaryNameSearch", TEXT);
+            builder.add_text_field("primaryProfession", TEXT | STORED);
+            builder.add_text_field("knownForTitles", TEXT | STORED);
+            let numeric = NumericOptions::default()
+                .set_indexed()
+                .set_stored()
+                .set_fast();
+            builder.add_i64_field("birthYear", numeric.clone());
+            builder.add_i64_field("deathYear", numeric);
+            builder.build()
+        };
+
+        let index = Index::create_in_ram(schema.clone());
+        let schema_from_index = index.schema();
+        let fields = NameFields {
+            nconst: schema_from_index.get_field("nconst").unwrap(),
+            primary_name: schema_from_index.get_field("primaryName").unwrap(),
+            primary_name_search: schema_from_index.get_field("primaryNameSearch").unwrap(),
+            birth_year: schema_from_index.get_field("birthYear").unwrap(),
+            death_year: schema_from_index.get_field("deathYear").unwrap(),
+            primary_profession: schema_from_index.get_field("primaryProfession").unwrap(),
+            known_for_titles: schema_from_index.get_field("knownForTitles").unwrap(),
+        };
+
+        (schema, fields, index)
+    }
+
+    fn build_test_indexes() -> PreparedIndexes {
+        // Title index with one document
+        let (_schema, fields, index) = build_test_title_schema();
+        let mut writer = index.writer::<TantivyDocument>(20_000_000).unwrap();
+        let mut doc = TantivyDocument::default();
+        doc.add_text(fields.tconst, "tt0133093");
+        doc.add_text(fields.title_type, "movie");
+        doc.add_text(fields.primary_title, "The Matrix");
+        doc.add_text(fields.original_title, "The Matrix");
+        doc.add_text(fields.search_titles, "The Matrix");
+        doc.add_text(fields.genres, "Action");
+        doc.add_text(fields.genres, "Sci-Fi");
+        doc.add_i64(fields.start_year, 1999);
+        doc.add_i64(fields.end_year, 1999);
+        doc.add_f64(fields.average_rating, 8.7);
+        doc.add_i64(fields.num_votes, 1_900_000);
+        writer.add_document(doc).unwrap();
+        writer.commit().unwrap();
+        let reader = index.reader().unwrap();
+        reader.reload().unwrap();
+        let mut query_parser = QueryParser::for_index(
+            &index,
+            vec![
+                fields.primary_title,
+                fields.original_title,
+                fields.search_titles,
+                fields.genres,
+            ],
+        );
+        query_parser.set_field_boost(fields.primary_title, 2.0);
+        query_parser.set_field_boost(fields.original_title, 1.2);
+        query_parser.set_field_boost(fields.search_titles, 1.0);
+        query_parser.set_field_boost(fields.genres, 0.3);
+        query_parser.set_field_fuzzy(fields.primary_title, false, 1, true);
+        query_parser.set_field_fuzzy(fields.original_title, false, 1, true);
+        query_parser.set_field_fuzzy(fields.search_titles, false, 1, true);
+
+        let title_index = TitleIndex {
+            schema: index.schema(),
+            fields,
+            reader,
+            query_parser,
+        };
+
+        // Name index with one document
+        let (_schema, fields, index) = build_test_name_schema();
+        let mut writer = index.writer::<TantivyDocument>(20_000_000).unwrap();
+        let mut doc = TantivyDocument::default();
+        doc.add_text(fields.nconst, "nm0000206");
+        doc.add_text(fields.primary_name, "Keanu Reeves");
+        doc.add_text(fields.primary_name_search, "Keanu Reeves");
+        doc.add_text(fields.primary_profession, "actor");
+        doc.add_text(fields.primary_name_search, "actor");
+        doc.add_text(fields.known_for_titles, "tt0133093");
+        doc.add_i64(fields.birth_year, 1964);
+        writer.add_document(doc).unwrap();
+        writer.commit().unwrap();
+        let reader = index.reader().unwrap();
+        reader.reload().unwrap();
+        let mut query_parser = QueryParser::for_index(
+            &index,
+            vec![fields.primary_name_search, fields.primary_profession],
+        );
+        query_parser.set_field_boost(fields.primary_name_search, 1.5);
+        query_parser.set_field_fuzzy(fields.primary_name_search, false, 1, true);
+        query_parser.set_field_fuzzy(fields.primary_profession, false, 1, true);
+
+        let name_index = NameIndex {
+            fields,
+            reader,
+            query_parser,
+        };
+
+        PreparedIndexes {
+            titles: title_index,
+            names: name_index,
+        }
+    }
+
+    #[tokio::test]
+    async fn title_search_returns_expected_result() {
+        let indexes = build_test_indexes();
+        let state = AppState::new(indexes);
+        let app = router(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/titles/search?query=Matrix")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: TitleSearchResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.results.len(), 1);
+        assert_eq!(parsed.results[0].tconst, "tt0133093");
+    }
+
+    #[tokio::test]
+    async fn title_id_endpoint_returns_document() {
+        let indexes = build_test_indexes();
+        let state = AppState::new(indexes);
+        let app = router(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/titles/tt0133093")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: TitleSearchResult = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.primary_title, "The Matrix");
+    }
+
+    #[tokio::test]
+    async fn name_search_supports_typos_and_filters() {
+        let indexes = build_test_indexes();
+        let state = AppState::new(indexes);
+        let app = router(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/names/search?query=Kean&birth_year_min=1900&primary_profession=actor")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let parsed: NameSearchResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.results.len(), 1);
+        assert_eq!(parsed.results[0].nconst, "nm0000206");
+    }
+
+    #[test]
+    fn relevance_score_rewards_rating_votes_and_recency() {
+        let base = 1.0;
+        let high = TitleSearchResult {
+            tconst: "tt1".into(),
+            primary_title: "High".into(),
+            original_title: None,
+            title_type: Some("movie".into()),
+            start_year: Some(2020),
+            end_year: Some(2020),
+            genres: None,
+            average_rating: Some(8.5),
+            num_votes: Some(50_000),
+            score: None,
+            sort_value: None,
+        };
+        let low = TitleSearchResult {
+            tconst: "tt2".into(),
+            primary_title: "Low".into(),
+            original_title: None,
+            title_type: Some("movie".into()),
+            start_year: Some(1990),
+            end_year: Some(1990),
+            genres: None,
+            average_rating: Some(6.0),
+            num_votes: Some(10),
+            score: None,
+            sort_value: None,
+        };
+
+        let high_score = compute_title_relevance_score(base, &high, Some("high"));
+        let low_score = compute_title_relevance_score(base, &low, Some("low"));
+
+        assert!(high_score > low_score);
+    }
 }
 
 impl ApiError {
