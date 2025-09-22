@@ -8,7 +8,7 @@ use futures_util::TryStreamExt;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::task;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::config::AppConfig;
 
@@ -70,6 +70,11 @@ async fn download_missing_files(files: &[DatasetFile]) -> Result<()> {
             continue;
         }
 
+        if file.tsv_path.exists() {
+            debug!(path = %file.tsv_path.display(), "dataset already prepared");
+            continue;
+        }
+
         let url = format!("{}/{}", IMDB_BASE_URL, file.name);
         info!(%url, path = %file.gz_path.display(), "downloading dataset");
 
@@ -107,6 +112,23 @@ async fn download_missing_files(files: &[DatasetFile]) -> Result<()> {
 
 async fn decompress_archives(files: &[DatasetFile]) -> Result<()> {
     for file in files {
+        if !file.gz_path.exists() {
+            if file.tsv_path.exists() {
+                debug!(
+                    gz = %file.gz_path.display(),
+                    tsv = %file.tsv_path.display(),
+                    "compressed archive already removed"
+                );
+            } else {
+                warn!(
+                    gz = %file.gz_path.display(),
+                    tsv = %file.tsv_path.display(),
+                    "missing compressed archive; skipping decompression"
+                );
+            }
+            continue;
+        }
+
         if file.tsv_path.exists() {
             let gz_meta = fs::metadata(&file.gz_path).await.ok();
             let tsv_meta = fs::metadata(&file.tsv_path).await.ok();
@@ -115,6 +137,13 @@ async fn decompress_archives(files: &[DatasetFile]) -> Result<()> {
                 && gz_time <= tsv_time
             {
                 debug!(path = %file.tsv_path.display(), "decompression up to date");
+                if let Err(err) = fs::remove_file(&file.gz_path).await {
+                    warn!(
+                        path = %file.gz_path.display(),
+                        error = %err,
+                        "failed to remove compressed archive"
+                    );
+                }
                 continue;
             }
         }
@@ -130,6 +159,16 @@ async fn decompress_archives(files: &[DatasetFile]) -> Result<()> {
         task::spawn_blocking(move || decompress_sync(&gz_path, &tsv_path))
             .await
             .context("joining decompression task")??;
+
+        if let Err(err) = fs::remove_file(&file.gz_path).await {
+            warn!(
+                path = %file.gz_path.display(),
+                error = %err,
+                "failed to remove compressed archive after decompression"
+            );
+        } else {
+            debug!(path = %file.gz_path.display(), "removed compressed archive");
+        }
     }
     Ok(())
 }
