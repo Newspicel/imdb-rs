@@ -203,7 +203,7 @@ async fn prepare_title_index(
         .reload_policy(ReloadPolicy::OnCommitWithDelay)
         .try_into()
         .context("constructing title index reader")?;
-    let query_parser = QueryParser::for_index(
+    let mut query_parser = QueryParser::for_index(
         &index,
         vec![
             fields.primary_title,
@@ -212,6 +212,10 @@ async fn prepare_title_index(
             fields.genres,
         ],
     );
+    query_parser.set_field_boost(fields.primary_title, 2.0);
+    query_parser.set_field_boost(fields.original_title, 1.2);
+    query_parser.set_field_boost(fields.search_titles, 1.0);
+    query_parser.set_field_boost(fields.genres, 0.3);
 
     Ok(TitleIndex {
         schema,

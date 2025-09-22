@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::ops::Bound;
 use std::sync::Arc;
 
@@ -257,6 +258,12 @@ async fn search_titles(
         I64(Vec<(i64, DocAddress)>),
     }
 
+    let query_lower = if query_text.is_empty() {
+        None
+    } else {
+        Some(query_text.to_lowercase())
+    };
+
     let hits = match sort_mode {
         SortMode::Relevance => CollectedDocs::Score(
             searcher
@@ -309,12 +316,14 @@ async fn search_titles(
 
     match hits {
         CollectedDocs::Score(docs) => {
-            for (score, addr) in docs {
+            for (base_score, addr) in docs {
                 let doc = searcher
                     .doc::<TantivyDocument>(addr)
                     .map_err(|err| ApiError::internal(err.into()))?;
                 let mut result = document_to_title_result(&doc, &title_index.fields)?;
-                result.score = Some(score);
+                let final_score =
+                    compute_title_relevance_score(base_score, &result, query_lower.as_deref());
+                result.score = Some(final_score);
                 results.push(result);
             }
         }
@@ -338,6 +347,15 @@ async fn search_titles(
                 results.push(result);
             }
         }
+    }
+
+    if matches!(sort_mode, SortMode::Relevance) {
+        results.sort_by(|a, b| {
+            let left = a.score.unwrap_or_default();
+            let right = b.score.unwrap_or_default();
+            right.partial_cmp(&left).unwrap_or(Ordering::Equal)
+        });
+        results.truncate(limit);
     }
 
     Ok(Json(TitleSearchResponse { results }))
@@ -540,6 +558,39 @@ fn document_to_name_result(
         known_for_titles: known_for,
         score: None,
     })
+}
+
+fn compute_title_relevance_score(
+    base_score: Score,
+    result: &TitleSearchResult,
+    query_lower: Option<&str>,
+) -> f32 {
+    let base = base_score.max(0.0001) as f64;
+
+    let rating = result.average_rating.unwrap_or(5.0);
+    let votes = result.num_votes.unwrap_or(0) as f64;
+    let year_component = result
+        .start_year
+        .map(|year| ((year as f64 - 1980.0) / 50.0).clamp(0.0, 1.5))
+        .unwrap_or(0.0);
+
+    let vote_weight = (1.0 + votes).ln();
+    let rating_component = (rating / 10.0) * (1.0 + vote_weight / 5.0);
+    let popularity_component = vote_weight / 6.0;
+
+    let primary_bonus = query_lower
+        .and_then(|needle| {
+            let haystack = result.primary_title.to_lowercase();
+            if haystack.contains(needle) {
+                Some(0.35)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0.0);
+
+    let combined = 1.0 + rating_component + popularity_component + year_component + primary_bonus;
+    (base * combined) as f32
 }
 
 fn get_first_text(doc: &TantivyDocument, field: tantivy::schema::Field) -> Option<String> {
