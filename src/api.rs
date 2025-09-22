@@ -1,7 +1,7 @@
 use std::ops::Bound;
 use std::sync::Arc;
 
-use axum::extract::{Query as AxumQuery, State};
+use axum::extract::{Path, Query as AxumQuery, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -36,6 +36,8 @@ pub fn router(state: AppState) -> Router {
         .route("/search", get(search_titles))
         .route("/titles/search", get(search_titles))
         .route("/names/search", get(search_names))
+        .route("/titles/:tconst", get(get_title_by_id))
+        .route("/names/:nconst", get(get_name_by_id))
         .with_state(state)
 }
 
@@ -105,9 +107,16 @@ struct TitleSearchResult {
 
 #[derive(Debug, Deserialize)]
 struct NameSearchParams {
+    #[serde(default)]
     query: String,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    birth_year_min: Option<i64>,
+    #[serde(default)]
+    birth_year_max: Option<i64>,
+    #[serde(default)]
+    primary_profession: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -339,21 +348,62 @@ async fn search_names(
     State(state): State<AppState>,
     AxumQuery(params): AxumQuery<NameSearchParams>,
 ) -> Result<Json<NameSearchResponse>, ApiError> {
-    if params.query.trim().is_empty() {
-        return Err(ApiError::bad_request("query parameter cannot be empty"));
+    let query_text = params.query.trim();
+    let has_filters = params.birth_year_min.is_some()
+        || params.birth_year_max.is_some()
+        || !params.primary_profession.is_empty();
+
+    if query_text.is_empty() && !has_filters {
+        return Err(ApiError::bad_request(
+            "provide a query or at least one filter",
+        ));
     }
 
     let limit = params.limit.unwrap_or(10).clamp(1, 50);
     let name_index = &state.name_index;
     let searcher = name_index.reader.searcher();
 
-    let parsed_query = name_index
-        .query_parser
-        .parse_query(params.query.trim())
-        .map_err(|err| ApiError::bad_request(format!("invalid query: {}", err)))?;
+    let mut clauses: Vec<(Occur, Box<dyn TantivyQuery>)> = Vec::new();
+
+    if !query_text.is_empty() {
+        let parsed_query = name_index
+            .query_parser
+            .parse_query(query_text)
+            .map_err(|err| ApiError::bad_request(format!("invalid query: {}", err)))?;
+        clauses.push((Occur::Must, parsed_query));
+    }
+
+    if params.birth_year_min.is_some() || params.birth_year_max.is_some() {
+        let lower = params
+            .birth_year_min
+            .map(|value| Bound::Included(Term::from_field_i64(name_index.fields.birth_year, value)))
+            .unwrap_or(Bound::Unbounded);
+        let upper = params
+            .birth_year_max
+            .map(|value| Bound::Included(Term::from_field_i64(name_index.fields.birth_year, value)))
+            .unwrap_or(Bound::Unbounded);
+        let range = RangeQuery::new(lower, upper);
+        clauses.push((Occur::Must, Box::new(range)));
+    }
+
+    for profession in params
+        .primary_profession
+        .iter()
+        .filter(|value| !value.is_empty())
+    {
+        let term = Term::from_field_text(name_index.fields.primary_profession, profession);
+        let query = TermQuery::new(term, Default::default());
+        clauses.push((Occur::Must, Box::new(query)));
+    }
+
+    let combined_query: Box<dyn TantivyQuery> = match clauses.len() {
+        0 => Box::new(AllQuery),
+        1 => clauses.into_iter().next().unwrap().1,
+        _ => Box::new(BooleanQuery::from(clauses)),
+    };
 
     let hits = searcher
-        .search(&parsed_query, &TopDocs::with_limit(limit))
+        .search(&combined_query, &TopDocs::with_limit(limit))
         .map_err(|err| ApiError::internal(err.into()))?;
 
     let mut results = Vec::with_capacity(hits.len());
@@ -367,6 +417,58 @@ async fn search_names(
     }
 
     Ok(Json(NameSearchResponse { results }))
+}
+
+#[instrument(skip(state))]
+async fn get_title_by_id(
+    State(state): State<AppState>,
+    Path(tconst): Path<String>,
+) -> Result<Json<TitleSearchResult>, ApiError> {
+    let title_index = &state.title_index;
+    let searcher = title_index.reader.searcher();
+    let term = Term::from_field_text(title_index.fields.tconst, &tconst);
+    let query = TermQuery::new(term, Default::default());
+
+    let hits = searcher
+        .search(&query, &TopDocs::with_limit(1))
+        .map_err(|err| ApiError::internal(err.into()))?;
+
+    if let Some((score, addr)) = hits.into_iter().next() {
+        let doc = searcher
+            .doc::<TantivyDocument>(addr)
+            .map_err(|err| ApiError::internal(err.into()))?;
+        let mut result = document_to_title_result(&doc, &title_index.fields)?;
+        result.score = Some(score);
+        return Ok(Json(result));
+    }
+
+    Err(ApiError::not_found("title not found"))
+}
+
+#[instrument(skip(state))]
+async fn get_name_by_id(
+    State(state): State<AppState>,
+    Path(nconst): Path<String>,
+) -> Result<Json<NameSearchResult>, ApiError> {
+    let name_index = &state.name_index;
+    let searcher = name_index.reader.searcher();
+    let term = Term::from_field_text(name_index.fields.nconst, &nconst);
+    let query = TermQuery::new(term, Default::default());
+
+    let hits = searcher
+        .search(&query, &TopDocs::with_limit(1))
+        .map_err(|err| ApiError::internal(err.into()))?;
+
+    if let Some((score, addr)) = hits.into_iter().next() {
+        let doc = searcher
+            .doc::<TantivyDocument>(addr)
+            .map_err(|err| ApiError::internal(err.into()))?;
+        let mut result = document_to_name_result(&doc, &name_index.fields)?;
+        result.score = Some(score);
+        return Ok(Json(result));
+    }
+
+    Err(ApiError::not_found("name not found"))
 }
 
 async fn healthz() -> &'static str {
@@ -506,6 +608,14 @@ impl ApiError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: "internal server error".to_string(),
             detail: Some(err),
+        }
+    }
+
+    fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: message.into(),
+            detail: None,
         }
     }
 }

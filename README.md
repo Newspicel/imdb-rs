@@ -8,7 +8,7 @@ Rust service that downloads selected IMDb non-commercial datasets, builds a sear
 - Builds Tantivy indices for titles (primary, original, and international AKA titles) and names, enabling multilingual full-text search.
 - Async downloader with resumable streaming and background decompression.
 - Filterable JSON API for titles (type, year range, genres, rating, vote counts) with optional ranking by rating or votes; title search also matches crew and cast names from `title.principals.tsv`.
-- Dedicated name search API backed by the IMDb `name.basics.tsv` dataset.
+- Dedicated name search API backed by the IMDb `name.basics.tsv` dataset with range/attribute filters.
 
 ## Prerequisites
 - Rust 1.75+ (project uses the Rust 2024 edition and async/await).
@@ -72,8 +72,10 @@ Response example:
 Searches people from `name.basics.tsv`.
 
 Parameters:
-- `query` *(required)* – text to search across primary names and professions.
+- `query` *(optional)* – text to search across primary names and professions.
 - `limit` *(optional)* – max results (1–50, default 10).
+- `birth_year_min`, `birth_year_max` – inclusive birth year range filters.
+- `primary_profession` – repeatable parameter to require specific professions (e.g. `primary_profession=actor`).
 
 Response example:
 ```json
@@ -90,6 +92,12 @@ Response example:
   ]
 }
 ```
+
+### `GET /titles/{tconst}`
+Fetches a single title by its IMDb identifier (e.g. `tt0133093`). Returns the same payload shape as `/titles/search`.
+
+### `GET /names/{nconst}`
+Fetches a single person by their IMDb identifier (e.g. `nm0000206`). Returns the same payload shape as `/names/search`.
 
 ## Development
 - `cargo fmt` and `cargo clippy` keep the codebase consistent.
